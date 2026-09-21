@@ -1,0 +1,1 @@
+-- Jalankan schema.sql terlebih dahulu, lalu `node seed.js`.
