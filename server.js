@@ -26,7 +26,9 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const secret = process.env.JWT_SECRET || 'wevote-development-secret-change-me';
-const adminPath = (process.env.ADMIN_PATH || '/wevote-control').startsWith('/') ? (process.env.ADMIN_PATH || '/wevote-control') : `/${process.env.ADMIN_PATH}`;
+const adminPath = (process.env.ADMIN_PATH || '/wevote-control').startsWith('/')
+  ? (process.env.ADMIN_PATH || '/wevote-control')
+  : `/${process.env.ADMIN_PATH}`;
 
 app.use(express.json({ limit: '8mb' }));
 app.use(cookieParser());
@@ -62,6 +64,12 @@ function adminOnly(req, res, next) {
     return res.status(403).json({ error: 'Akses admin ditolak' });
   }
   next();
+}
+
+function isValidCandidatePhoto(photoUrl) {
+  if (!photoUrl) return true;
+  const val = String(photoUrl).trim();
+  return val.startsWith('data:image/') || val.startsWith('https://') || val.startsWith('http://');
 }
 
 async function dbError(res, error) {
@@ -284,7 +292,7 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.id,u.identity,u.full_name,u.role,u.voter_type,
-             EXISTS(SELECT 1 FROM votes v WHERE v.user_id=u.id AND v.election_id=1) AS voted
+      EXISTS(SELECT 1 FROM votes v WHERE v.user_id=u.id AND v.election_id=1) AS voted
       FROM users u
       WHERE u.role='voter'
       ORDER BY u.id
@@ -301,64 +309,89 @@ app.post('/api/admin/users/import', auth, adminOnly, async (req, res) => {
   if (!csv.trim()) return res.status(400).json({ error: 'File CSV kosong.' });
 
   function parseCsv(text) {
-    const rows=[]; let row=[]; let cell=''; let quoted=false;
-    for(let i=0;i<text.length;i++){
-      const ch=text[i], next=text[i+1];
-      if(quoted){
-        if(ch==='"' && next==='"'){ cell+='"'; i++; }
-        else if(ch==='"') quoted=false;
-        else cell+=ch;
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i], next = text[i + 1];
+      if (quoted) {
+        if (ch === '"' && next === '"') { cell += '"'; i++; }
+        else if (ch === '"') quoted = false;
+        else cell += ch;
       } else {
-        if(ch==='"' && cell==='') quoted=true;
-        else if(ch===','){ row.push(cell); cell=''; }
-        else if(ch==='\n'){ row.push(cell.replace(/\r$/,'')); rows.push(row); row=[]; cell=''; }
-        else cell+=ch;
+        if (ch === '"' && cell === '') quoted = true;
+        else if (ch === ',') { row.push(cell); cell = ''; }
+        else if (ch === '\n') { row.push(cell.replace(/\r$/, '')); rows.push(row); row = []; cell = ''; }
+        else cell += ch;
       }
     }
-    if(cell!=='' || row.length){ row.push(cell.replace(/\r$/,'')); rows.push(row); }
-    return rows.filter(r=>r.some(x=>String(x).trim()!==''));
+    if (cell !== '' || row.length) { row.push(cell.replace(/\r$/, '')); rows.push(row); }
+    return rows.filter(r => r.some(x => String(x).trim() !== ''));
   }
 
-  const rows=parseCsv(csv);
-  if(rows.length<2) return res.status(400).json({ error: 'CSV harus memiliki header dan minimal satu data pemilih.' });
-  const header=rows[0].map(x=>String(x).trim().toLowerCase());
-  const required=['identity','password','full_name','voter_type'];
-  if(!required.every(h=>header.includes(h))) return res.status(400).json({ error: 'Header CSV harus berisi: identity,password,full_name,voter_type.' });
-  const idx=Object.fromEntries(header.map((h,i)=>[h,i]));
+  const rows = parseCsv(csv);
+  if (rows.length < 2) return res.status(400).json({ error: 'CSV harus memiliki header dan minimal satu data pemilih.' });
+  const header = rows[0].map(x => String(x).trim().toLowerCase());
+  const required = ['identity', 'password', 'full_name', 'voter_type'];
+  if (!required.every(h => header.includes(h))) return res.status(400).json({ error: 'Header CSV harus berisi: identity,password,full_name,voter_type.' });
+  const idx = Object.fromEntries(header.map((h, i) => [h, i]));
 
-  const client=await pool.connect(); let inserted=0,updated=0,skipped=0; const errors=[];
-  try{
+  const client = await pool.connect();
+  let inserted = 0, updated = 0, skipped = 0;
+  const errors = [];
+  try {
     await client.query('BEGIN');
-    for(let n=1;n<rows.length;n++){
-      const r=rows[n];
-      const identity=String(r[idx.identity]||'').trim();
-      const password=String(r[idx.password]||'');
-      const fullName=String(r[idx.full_name]||'').trim();
-      const voterType=String(r[idx.voter_type]||'').trim().toLowerCase();
-      if(!identity || !fullName || !['siswa','pegawai'].includes(voterType)){ skipped++; errors.push(`Baris ${n+1}: identity/nama/jenis tidak valid.`); continue; }
-      if(identity.length>50 || fullName.length>150){ skipped++; errors.push(`Baris ${n+1}: identity atau nama terlalu panjang.`); continue; }
+    for (let n = 1; n < rows.length; n++) {
+      const r = rows[n];
+      const identity = String(r[idx.identity] || '').trim();
+      const password = String(r[idx.password] || '');
+      const fullName = String(r[idx.full_name] || '').trim();
+      const voterType = String(r[idx.voter_type] || '').trim().toLowerCase();
+      if (!identity || !fullName || !['siswa', 'pegawai'].includes(voterType)) {
+        skipped++;
+        errors.push(`Baris ${n + 1}: identity/nama/jenis tidak valid.`);
+        continue;
+      }
+      if (identity.length > 50 || fullName.length > 150) {
+        skipped++;
+        errors.push(`Baris ${n + 1}: identity atau nama terlalu panjang.`);
+        continue;
+      }
 
-      const existing=await client.query('SELECT id,role FROM users WHERE identity=$1 LIMIT 1',[identity]);
-      if(existing.rowCount && existing.rows[0].role!=='voter'){ skipped++; errors.push(`Baris ${n+1}: identity ${identity} milik akun admin dan tidak diubah.`); continue; }
-      if(existing.rowCount){
-        if(password){
-          const hash=await bcrypt.hash(password,10);
-          await client.query('UPDATE users SET full_name=$1,voter_type=$2,password_hash=$3 WHERE id=$4',[fullName,voterType,hash,existing.rows[0].id]);
-        }else{
-          await client.query('UPDATE users SET full_name=$1,voter_type=$2 WHERE id=$3',[fullName,voterType,existing.rows[0].id]);
+      const existing = await client.query('SELECT id,role FROM users WHERE identity=$1 LIMIT 1', [identity]);
+      if (existing.rowCount && existing.rows[0].role !== 'voter') {
+        skipped++;
+        errors.push(`Baris ${n + 1}: identity ${identity} milik akun admin dan tidak diubah.`);
+        continue;
+      }
+      if (existing.rowCount) {
+        if (password) {
+          const hash = await bcrypt.hash(password, 10);
+          await client.query('UPDATE users SET full_name=$1,voter_type=$2,password_hash=$3 WHERE id=$4', [fullName, voterType, hash, existing.rows[0].id]);
+        } else {
+          await client.query('UPDATE users SET full_name=$1,voter_type=$2 WHERE id=$3', [fullName, voterType, existing.rows[0].id]);
         }
         updated++;
-      }else{
-        if(!password){ skipped++; errors.push(`Baris ${n+1}: password wajib untuk pemilih baru.`); continue; }
-        const hash=await bcrypt.hash(password,10);
-        await client.query(`INSERT INTO users(identity,password_hash,full_name,role,voter_type) VALUES($1,$2,$3,'voter',$4)`,[identity,hash,fullName,voterType]);
+      } else {
+        if (!password) {
+          skipped++;
+          errors.push(`Baris ${n + 1}: password wajib untuk pemilih baru.`);
+          continue;
+        }
+        const hash = await bcrypt.hash(password, 10);
+        await client.query(`INSERT INTO users(identity,password_hash,full_name,role,voter_type) VALUES($1,$2,$3,'voter',$4)`, [identity, hash, fullName, voterType]);
         inserted++;
       }
     }
     await client.query('COMMIT');
-    res.json({ok:true,inserted,updated,skipped,errors:errors.slice(0,20)});
-  }catch(e){ await client.query('ROLLBACK'); dbError(res,e); }
-  finally{ client.release(); }
+    res.json({ ok: true, inserted, updated, skipped, errors: errors.slice(0, 20) });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    dbError(res, e);
+  } finally {
+    client.release();
+  }
 });
 
 app.put('/api/admin/settings', auth, adminOnly, async (req, res) => {
@@ -382,11 +415,17 @@ app.put('/api/admin/settings', auth, adminOnly, async (req, res) => {
 app.put('/api/admin/settings/logo', auth, adminOnly, async (req, res) => {
   try {
     const { logo_url } = req.body;
-    if (logo_url && !String(logo_url).startsWith('data:image/')) return res.status(400).json({ error: 'Logo harus berupa data gambar yang valid.' });
-    if (logo_url && String(logo_url).length > 7_000_000) return res.status(400).json({ error: 'Logo terlalu besar setelah dikompresi.' });
+    if (logo_url && !String(logo_url).startsWith('data:image/')) {
+      return res.status(400).json({ error: 'Logo harus berupa data gambar yang valid.' });
+    }
+    if (logo_url && String(logo_url).length > 7_000_000) {
+      return res.status(400).json({ error: 'Logo terlalu besar setelah dikompresi.' });
+    }
     await pool.query('UPDATE election_settings SET logo_url=$1,updated_at=NOW() WHERE id=1', [logo_url || '']);
     res.json({ ok: true });
-  } catch(e) { dbError(res,e); }
+  } catch (e) {
+    dbError(res, e);
+  }
 });
 
 app.put('/api/admin/settings/backgrounds', auth, adminOnly, async (req, res) => {
@@ -408,20 +447,28 @@ app.put('/api/admin/settings/backgrounds', auth, adminOnly, async (req, res) => 
       [background_1 || '', background_2 || '', background_3 || '']
     );
     res.json({ ok: true });
-  } catch(e) { dbError(res,e); }
+  } catch (e) {
+    dbError(res, e);
+  }
 });
 
 app.post('/api/admin/candidates', auth, adminOnly, async (req, res) => {
   try {
     const { name, photo_url, vision, mission } = req.body;
-    if (photo_url && !String(photo_url).startsWith('data:image/')) return res.status(400).json({ error: 'Foto harus berupa upload gambar dari komputer atau data gambar yang valid.' });
-    if (photo_url && String(photo_url).length > 7_000_000) return res.status(400).json({ error: 'Foto terlalu besar setelah dikompresi.' });
-    if (!name?.trim()) return res.status(400).json({ error: 'Nama kandidat wajib diisi.' });
+    if (!isValidCandidatePhoto(photo_url)) {
+      return res.status(400).json({ error: 'Foto harus berupa upload gambar dari komputer atau URL gambar yang valid.' });
+    }
+    if (photo_url && String(photo_url).length > 7_000_000) {
+      return res.status(400).json({ error: 'Foto terlalu besar setelah dikompresi.' });
+    }
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Nama kandidat wajib diisi.' });
+    }
     const max = (await pool.query('SELECT COALESCE(MAX(sort_order),0) AS n FROM candidates')).rows[0].n;
     const result = await pool.query(
-      `INSERT INTO candidates(name,photo_url,vision,mission,sort_order)
-       VALUES($1,$2,$3,$4,$5) RETURNING *`,
-      [name.trim(), photo_url || '', vision || '', mission || '', Number(max) + 1]
+      `INSERT INTO candidates(name,photo_url,vision,mission,sort_order,active)
+       VALUES($1,$2,$3,$4,$5,true) RETURNING *`,
+      [String(name).trim(), photo_url || '', vision || '', mission || '', Number(max) + 1]
     );
     res.json(result.rows[0]);
   } catch (e) {
@@ -432,12 +479,19 @@ app.post('/api/admin/candidates', auth, adminOnly, async (req, res) => {
 app.put('/api/admin/candidates/:id', auth, adminOnly, async (req, res) => {
   try {
     const { name, photo_url, vision, mission } = req.body;
-    if (photo_url && !String(photo_url).startsWith('data:image/')) return res.status(400).json({ error: 'Foto harus berupa upload gambar dari komputer atau data gambar yang valid.' });
-    if (photo_url && String(photo_url).length > 7_000_000) return res.status(400).json({ error: 'Foto terlalu besar setelah dikompresi.' });
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Nama kandidat wajib diisi.' });
+    }
+    if (!isValidCandidatePhoto(photo_url)) {
+      return res.status(400).json({ error: 'Foto harus berupa upload gambar dari komputer atau URL gambar yang valid.' });
+    }
+    if (photo_url && String(photo_url).length > 7_000_000) {
+      return res.status(400).json({ error: 'Foto terlalu besar setelah dikompresi.' });
+    }
     const result = await pool.query(
       `UPDATE candidates SET name=$1,photo_url=$2,vision=$3,mission=$4
        WHERE id=$5 RETURNING *`,
-      [name?.trim(), photo_url || '', vision || '', mission || '', Number(req.params.id)]
+      [String(name).trim(), photo_url || '', vision || '', mission || '', Number(req.params.id)]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Kandidat tidak ditemukan.' });
     res.json(result.rows[0]);
